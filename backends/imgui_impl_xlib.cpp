@@ -28,6 +28,7 @@
 
 // Xlib
 #include <X11/X.h>
+#include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
@@ -64,6 +65,14 @@ struct ImGui_ImplXlib_Data
     unsigned int    MimeCount;
 
     ImGui_ImplXlib_Data()   { memset((void*)this, 0, sizeof(*this)); }
+};
+
+struct ImGui_ImplXlib_ViewportData {
+    Window Handle;
+    Window ParentHandle;
+    bool   Owned;
+
+    ImGui_ImplXlib_ViewportData() {memset(this, 0, sizeof(ImGui_ImplXlib_ViewportData));};
 };
 
 static const char *text_mime_types[] = {
@@ -454,6 +463,143 @@ bool ImGui_ImplXlib_ProcessEvent(XEvent* event) {
     return false;
 }
 
+Window ImGui_ImplXlib_GetHandleFromViewport(ImGuiViewport* viewport) {
+     return viewport ? (Window)viewport->PlatformHandle : 0;
+}
+
+static void ImGui_ImplXlib_CreateWindow(ImGuiViewport* viewport)
+{
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    ImGui_ImplXlib_ViewportData* vd = IM_NEW(ImGui_ImplXlib_ViewportData);
+    Window root = DefaultRootWindow(bd->Dpy);
+    vd->ParentHandle = ImGui_ImplXlib_GetHandleFromViewport(viewport->ParentViewport);
+    viewport->PlatformUserData = vd;
+    XSetWindowAttributes winAttribs;
+    winAttribs.colormap =  CopyFromParent;
+	winAttribs.event_mask = ExposureMask | KeyPressMask | StructureNotifyMask |
+                     KeyReleaseMask | ButtonPressMask | ButtonReleaseMask;
+    //TODO::Set depth, visual etc
+    vd->Handle = XCreateWindow(bd->Dpy, root, viewport->Pos.x, viewport->Pos.y,
+                                viewport->Size.x, viewport->Size.y, 0, 0, 0, 0, CWColormap | CWEventMask,
+                                &winAttribs);
+    XSetTransientForHint(bd->Dpy, (Window)vd->Handle, (Window)viewport->PlatformHandleRaw);
+
+    Atom state = XInternAtom(bd->Dpy, "_NET_WM_STATE", False);
+    Atom type = XInternAtom(bd->Dpy, "_NET_WM_WINDOW_TYPE", False);
+    Atom taskbarBehaviour = XInternAtom(bd->Dpy, "_NET_WM_STATE_SKIP_TASKBAR", False);
+    Atom dock = XInternAtom(bd->Dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
+    XChangeProperty(bd->Dpy, (Window)vd->Handle, type, XA_ATOM, 32, PropModeReplace, (unsigned char*)&dock, 1);
+    XChangeProperty(bd->Dpy, (Window)vd->Handle, state, XA_ATOM, 32, PropModeReplace, (unsigned char*)&taskbarBehaviour, 1);
+
+    vd->Owned = 1;
+    viewport->PlatformHandle = (void*)vd->Handle;
+    viewport->PlatformHandleRaw = (void*)vd->Handle;
+    viewport->PlatformRequestResize = 0;
+}
+
+static void Imgui_ImplXlib_ShowWindow(ImGuiViewport* viewport) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    XMapWindow(bd->Dpy, (Window)viewport->PlatformHandleRaw);
+}
+
+static void ImGui_ImplXlib_DestroyWindow(ImGuiViewport* viewport)
+{
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    ImGui_ImplXlib_ViewportData* vd = (ImGui_ImplXlib_ViewportData*)viewport->PlatformUserData;
+    if (!vd) return;
+    //TODO::There is Release Capture in win32 backend, look that up
+    XDestroyWindow(bd->Dpy, (Window)viewport->PlatformHandleRaw);
+    IM_DELETE(vd);
+    viewport->PlatformUserData = 0;
+    viewport->PlatformHandle = 0;
+}
+
+static void ImGui_ImplXlib_SetWindowPos(ImGuiViewport* viewport, ImVec2 pos) {
+   ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+   XMoveWindow(bd->Dpy, (Window)viewport->PlatformHandle, pos.x, pos.y);
+   XFlush(bd->Dpy);
+}
+
+static ImVec2 ImGui_ImplXlib_GetWindowPos(ImGuiViewport* viewport) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    XWindowAttributes attribs;
+    XGetWindowAttributes(bd->Dpy, (Window)viewport->PlatformHandle, &attribs);
+    return {(float)attribs.x, (float)attribs.y};
+}
+
+static void ImGui_ImplXlib_SetWindowSize(ImGuiViewport* viewport, ImVec2 size) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    XResizeWindow(bd->Dpy, (Window)viewport->PlatformHandle, size.x, size.y);
+    XFlush(bd->Dpy);
+}
+
+static ImVec2 ImGui_ImplXlib_GetWindowSize(ImGuiViewport* viewport) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    XWindowAttributes attribs;
+    XGetWindowAttributes(bd->Dpy, (Window)viewport->PlatformHandle, &attribs);
+    return {(float)attribs.width, (float)attribs.height};
+}
+
+static void ImGui_ImplXlib_SetWindowFocus(ImGuiViewport* viewport) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    XSetInputFocus(bd->Dpy, (Window)viewport->PlatformHandle, RevertToNone, CurrentTime);
+}
+
+static bool ImGui_ImplXlib_GetWindowFocus(ImGuiViewport* viewport) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    int rev;
+    Window win;
+    XGetInputFocus(bd->Dpy, &win, &rev);
+    return win == (Window)viewport->PlatformHandle;
+}
+
+static bool ImGui_ImplXlib_GetWindowMinimized(ImGuiViewport* viewport) {
+    ImVec2 size = ImGui_ImplXlib_GetWindowSize(viewport);
+    return size.x == 0 && size.y == 0;
+}
+
+static void ImGui_ImplXlib_SetWindowTitle(ImGuiViewport* viewport, const char* title) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    XStoreName(bd->Dpy, (Window)viewport->PlatformHandle, title);
+}
+
+static void ImGui_ImplXlib_SetWindowAlpha(ImGuiViewport* viewport, float alpha) {
+    return;
+}
+
+static void ImGui_ImplWin32_UpdateWindow(ImGuiViewport* viewport) {
+    //TODO::
+}
+
+static float ImGui_ImplXlib_GetWindowDpiScale(ImGuiViewport* viewport) {
+    return 1.0;
+}
+
+static void ImGui_ImplWin32_OnChangedViewport(ImGuiViewport* viewport) {
+    return;
+}
+
+
+void ImGui_ImplXlib_InitMultiViewportSupport() {
+    //XSetInputFocus
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    platform_io.Platform_CreateWindow = ImGui_ImplXlib_CreateWindow;
+    platform_io.Platform_DestroyWindow = ImGui_ImplXlib_DestroyWindow;
+    platform_io.Platform_ShowWindow = ImGui_ImplXlib_DestroyWindow;
+    platform_io.Platform_SetWindowPos = ImGui_ImplXlib_SetWindowPos;
+    platform_io.Platform_GetWindowPos = ImGui_ImplXlib_GetWindowPos;
+    platform_io.Platform_SetWindowSize = ImGui_ImplXlib_SetWindowSize;
+    platform_io.Platform_GetWindowSize = ImGui_ImplXlib_GetWindowSize;
+    platform_io.Platform_SetWindowFocus = ImGui_ImplXlib_SetWindowFocus;
+    platform_io.Platform_GetWindowFocus = ImGui_ImplXlib_GetWindowFocus;
+    platform_io.Platform_GetWindowMinimized = ImGui_ImplXlib_GetWindowMinimized;
+    platform_io.Platform_SetWindowTitle = ImGui_ImplXlib_SetWindowTitle;
+    platform_io.Platform_SetWindowAlpha = ImGui_ImplXlib_SetWindowAlpha;
+    platform_io.Platform_UpdateWindow = ImGui_ImplWin32_UpdateWindow;
+    platform_io.Platform_GetWindowDpiScale = ImGui_ImplXlib_GetWindowDpiScale; // FIXME-DPI
+    platform_io.Platform_OnChangedViewport = ImGui_ImplWin32_OnChangedViewport; // FIXME-DPI
+}
+
 bool ImGui_ImplXlib_Init(Display* display, Window window)
 {
     ImGuiIO& io = ImGui::GetIO();
@@ -465,6 +611,10 @@ bool ImGui_ImplXlib_Init(Display* display, Window window)
     io.BackendPlatformName = "imgui_impl_xlib";
     io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors;       // We can honor GetMouseCursor() values (optional)
     io.BackendFlags |= ImGuiBackendFlags_HasSetMousePos;        // We can honor io.WantSetMousePos requests (optional, rarely used)
+
+    io.BackendFlags |= ImGuiBackendFlags_PlatformHasViewports;    // We can create multi-viewports on the Platform side (optional)
+    io.BackendFlags |= ImGuiBackendFlags_HasMouseHoveredViewport; // We can call io.AddMouseViewportEvent() with correct data (optional)
+    io.BackendFlags |= ImGuiBackendFlags_HasParentViewport;       // We can honor viewport->ParentViewportId by applying the corresponding parent/child relationship at platform levle (optional)
 
     bd->Dpy = display;
     bd->Win = window;
@@ -506,6 +656,7 @@ bool ImGui_ImplXlib_Init(Display* display, Window window)
     bd->MouseCursors[ImGuiMouseCursor_Hand] = XCreateFontCursor(display, XC_hand2);
     bd->MouseCursors[ImGuiMouseCursor_NotAllowed] = XCreateFontCursor(display, XC_pirate);
 
+    ImGui_ImplXlib_InitMultiViewportSupport();
     return true;
 }
 

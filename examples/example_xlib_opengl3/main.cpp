@@ -107,6 +107,8 @@ int main(int, char**)
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
@@ -152,7 +154,7 @@ int main(int, char**)
             XEvent event;
             XNextEvent(display, &event);
             ImGui_ImplXlib_ProcessEvent(&event);
-            
+
             if (event.type == ClientMessage && event.xclient.window == window && (Atom)event.xclient.data.l[0] == wmDeleteMessage)
                 done = true;
         }
@@ -162,6 +164,7 @@ int main(int, char**)
         ImGui_ImplXlib_NewFrame();
         ImGui::NewFrame();
 
+        ImGui::DockSpaceOverViewport();
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
         if (show_demo_window)
             ImGui::ShowDemoWindow(&show_demo_window);
@@ -170,6 +173,7 @@ int main(int, char**)
         {
             static float f = 0.0f;
             static int counter = 0;
+            static char text[512] = {0};
 
             ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
 
@@ -179,6 +183,8 @@ int main(int, char**)
 
             ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
             ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
+
+            ImGui::InputText("input text", text, 512);
 
             if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
                 counter++;
@@ -201,6 +207,10 @@ int main(int, char**)
 
         // Rendering
         ImGui::Render();
+        if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+            ImGui::UpdatePlatformWindows();
+            ImGui::RenderPlatformWindowsDefault();
+        }
         glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
         glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -220,3 +230,4 @@ int main(int, char**)
 
     return 0;
 }
+
