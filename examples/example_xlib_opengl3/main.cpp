@@ -15,6 +15,7 @@
 #include <GL/glxext.h>
 
 // Main code
+void ImGui_ImplXlib_SetRendererCtx(GLXContext ctx);
 int main(int, char**)
 {
     // Setup Xlib
@@ -92,7 +93,6 @@ int main(int, char**)
 #endif
 
     GLXContext glx_context = glXCreateContextAttribsARB(display, fbc[0], 0, True, context_attribs);
-
     if (glx_context == 0) {
         printf("Error: Could not create GLX context\n");
         XCloseDisplay(display);
@@ -117,7 +117,12 @@ int main(int, char**)
     // Setup Platform/Renderer backends
     ImGui_ImplXlib_Init(display, window);
     ImGui_ImplOpenGL3_Init(glsl_version);
+    ImGui_ImplXlib_SetRendererCtx(glx_context);
+    ImGui_ImplXlib_InitMultiViewportSupport();
 
+    GLXWindow wctx = glXCreateWindow(ImGui_ImplXlib_GetBackendData()->Dpy, fbc[0], window, context_attribs);
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    glXMakeCurrent(bd->Dpy, wctx, (GLXContext)bd->RendererCtx);
     // Load Fonts
     // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
     // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
@@ -204,18 +209,16 @@ int main(int, char**)
                 show_another_window = false;
             ImGui::End();
         }
-
         // Rendering
         ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
             ImGui::UpdatePlatformWindows();
             ImGui::RenderPlatformWindowsDefault();
+            ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+            glXMakeCurrent(bd->Dpy, wctx, (GLXContext)bd->RendererCtx);
         }
-        glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-        glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
-        glClear(GL_COLOR_BUFFER_BIT);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        glXSwapBuffers(display, window);
+        glXSwapBuffers(display, wctx);
     }
 
     // Cleanup
