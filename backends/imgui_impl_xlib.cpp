@@ -25,12 +25,15 @@
 #include "imgui.h"
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_xlib.h"
+#include "stdio.h"
 
 // Xlib
 #include <X11/X.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <GL/glx.h>
+#include <X11/extensions/Xrandr.h>
 #include <X11/keysym.h>
 #include <X11/XF86keysym.h>
 #include <X11/cursorfont.h>
@@ -44,28 +47,30 @@
 #endif
 
 // Xlib Data
-struct ImGui_ImplXlib_Data
-{
-    Display*        Dpy;
-    Window          Win;
-    int             Xi2Opcode;
-    XIM             IM;
-    XIC             IC;
-    timespec        Time;
-    int             MouseButtonsDown;
-    Cursor          MouseCursors[ImGuiMouseCursor_COUNT];
-    Cursor          LastMouseCursor;
-    char*           ClipboardTextData;
-    bool            SelectionWaiting;
-    Atom            XA_CLIPBOARD;
-    Atom            XA_SELECTION;
-    Atom            XA_TARGETS;
-    Atom            XA_INCR;
-    Atom*           XA_MIME;
-    unsigned int    MimeCount;
-
-    ImGui_ImplXlib_Data()   { memset((void*)this, 0, sizeof(*this)); }
-};
+//struct ImGui_ImplXlib_Data
+//{
+//    Display*        Dpy;
+//    Window          Win;
+//    int             Xi2Opcode;
+//    XIM             IM;
+//    XIC             IC;
+//    timespec        Time;
+//    int             MouseButtonsDown;
+//    Cursor          MouseCursors[ImGuiMouseCursor_COUNT];
+//    Cursor          LastMouseCursor;
+//    char*           ClipboardTextData;
+//    bool            SelectionWaiting;
+//    bool            WantUpdateMonitors;
+//    Atom            XA_CLIPBOARD;
+//    Atom            XA_SELECTION;
+//    Atom            XA_TARGETS;
+//    Atom            XA_INCR;
+//    Atom*           XA_MIME;
+//    void*           RendererCtx;
+//    unsigned int    MimeCount;
+//
+//    ImGui_ImplXlib_Data()   { memset((void*)this, 0, sizeof(*this)); }
+//};
 
 struct ImGui_ImplXlib_ViewportData {
     Window Handle;
@@ -87,7 +92,7 @@ static const char *text_mime_types[] = {
 // It is STRONGLY preferred that you use docking branch with multi-viewports (== single Dear ImGui context + multiple windows) instead of multiple Dear ImGui contexts.
 // FIXME: multi-context support is not well tested and probably dysfunctional in this backend.
 // FIXME: some shared resources (mouse cursor shape, gamepad) are mishandled when using multi-context.
-static ImGui_ImplXlib_Data* ImGui_ImplXlib_GetBackendData()
+ImGui_ImplXlib_Data* ImGui_ImplXlib_GetBackendData()
 {
     return ImGui::GetCurrentContext() ? (ImGui_ImplXlib_Data*)ImGui::GetIO().BackendPlatformUserData : nullptr;
 }
@@ -467,6 +472,31 @@ Window ImGui_ImplXlib_GetHandleFromViewport(ImGuiViewport* viewport) {
      return viewport ? (Window)viewport->PlatformHandle : 0;
 }
 
+
+static int fbAttribs[] = {GLX_X_RENDERABLE,
+						  True,
+						  GLX_DRAWABLE_TYPE,
+						  GLX_WINDOW_BIT,
+						  GLX_RENDER_TYPE,
+						  GLX_RGBA_BIT,
+						  GLX_X_VISUAL_TYPE,
+						  GLX_TRUE_COLOR,
+						  GLX_RED_SIZE,
+						  8,
+						  GLX_GREEN_SIZE,
+						  8,
+						  GLX_BLUE_SIZE,
+						  8,
+						  GLX_ALPHA_SIZE,
+						  8,
+						  GLX_DEPTH_SIZE,
+						  24,
+						  GLX_STENCIL_SIZE,
+						  8,
+						  GLX_DOUBLEBUFFER,
+						  True,
+						  None};
+
 static void ImGui_ImplXlib_CreateWindow(ImGuiViewport* viewport)
 {
     ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
@@ -479,10 +509,22 @@ static void ImGui_ImplXlib_CreateWindow(ImGuiViewport* viewport)
 	winAttribs.event_mask = ExposureMask | KeyPressMask | StructureNotifyMask |
                      KeyReleaseMask | ButtonPressMask | ButtonReleaseMask;
     //TODO::Set depth, visual etc
+        int count = 0;
+        GLXFBConfig* fbConfings = glXChooseFBConfig(bd->Dpy, DefaultScreen(bd->Dpy), fbAttribs, &count);
+        GLXFBConfig fb_conf = fbConfings[0];
+        XFree(fbConfings);
+        XVisualInfo* vi = glXGetVisualFromFBConfig(bd->Dpy, fb_conf);
+        Colormap cmap = XCreateColormap(bd->Dpy, root, vi->visual, AllocNone);
+        winAttribs.colormap   = cmap;
+    //--------------------------
+
     vd->Handle = XCreateWindow(bd->Dpy, root, viewport->Pos.x, viewport->Pos.y,
-                                viewport->Size.x, viewport->Size.y, 0, 0, 0, 0, CWColormap | CWEventMask,
+                                viewport->Size.x, viewport->Size.y, 0, vi->depth, InputOutput, vi->visual, CWColormap | CWEventMask,
                                 &winAttribs);
-    XSetTransientForHint(bd->Dpy, (Window)vd->Handle, (Window)viewport->PlatformHandleRaw);
+    if (viewport->ParentViewport)
+        XSetTransientForHint(bd->Dpy, (Window)vd->Handle, (Window)viewport->ParentViewport->PlatformHandle);
+
+    XSetWindowBackground(bd->Dpy, (Window)vd->Handle, 0x0);
 
     Atom state = XInternAtom(bd->Dpy, "_NET_WM_STATE", False);
     Atom type = XInternAtom(bd->Dpy, "_NET_WM_WINDOW_TYPE", False);
@@ -497,7 +539,8 @@ static void ImGui_ImplXlib_CreateWindow(ImGuiViewport* viewport)
     viewport->PlatformRequestResize = 0;
 }
 
-static void Imgui_ImplXlib_ShowWindow(ImGuiViewport* viewport) {
+static void Imgui_ImplXlib_ShowWindow(ImGuiViewport* viewport)
+{
     ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
     XMapWindow(bd->Dpy, (Window)viewport->PlatformHandleRaw);
 }
@@ -514,7 +557,8 @@ static void ImGui_ImplXlib_DestroyWindow(ImGuiViewport* viewport)
     viewport->PlatformHandle = 0;
 }
 
-static void ImGui_ImplXlib_SetWindowPos(ImGuiViewport* viewport, ImVec2 pos) {
+static void ImGui_ImplXlib_SetWindowPos(ImGuiViewport* viewport, ImVec2 pos)
+{
    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
    XMoveWindow(bd->Dpy, (Window)viewport->PlatformHandle, pos.x, pos.y);
    XFlush(bd->Dpy);
@@ -524,7 +568,7 @@ static ImVec2 ImGui_ImplXlib_GetWindowPos(ImGuiViewport* viewport) {
     ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
     XWindowAttributes attribs;
     XGetWindowAttributes(bd->Dpy, (Window)viewport->PlatformHandle, &attribs);
-    return {(float)attribs.x, (float)attribs.y};
+    return {(float)attribs.x, (float)(attribs.y)};
 }
 
 static void ImGui_ImplXlib_SetWindowSize(ImGuiViewport* viewport, ImVec2 size) {
@@ -533,19 +577,23 @@ static void ImGui_ImplXlib_SetWindowSize(ImGuiViewport* viewport, ImVec2 size) {
     XFlush(bd->Dpy);
 }
 
-static ImVec2 ImGui_ImplXlib_GetWindowSize(ImGuiViewport* viewport) {
+static ImVec2 ImGui_ImplXlib_GetWindowSize(ImGuiViewport* viewport)
+{
     ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
     XWindowAttributes attribs;
     XGetWindowAttributes(bd->Dpy, (Window)viewport->PlatformHandle, &attribs);
     return {(float)attribs.width, (float)attribs.height};
 }
 
-static void ImGui_ImplXlib_SetWindowFocus(ImGuiViewport* viewport) {
+static void ImGui_ImplXlib_SetWindowFocus(ImGuiViewport* viewport)
+{
     ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
     XSetInputFocus(bd->Dpy, (Window)viewport->PlatformHandle, RevertToNone, CurrentTime);
+    XFlush(bd->Dpy);
 }
 
-static bool ImGui_ImplXlib_GetWindowFocus(ImGuiViewport* viewport) {
+static bool ImGui_ImplXlib_GetWindowFocus(ImGuiViewport* viewport)
+{
     ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
     int rev;
     Window win;
@@ -553,39 +601,130 @@ static bool ImGui_ImplXlib_GetWindowFocus(ImGuiViewport* viewport) {
     return win == (Window)viewport->PlatformHandle;
 }
 
-static bool ImGui_ImplXlib_GetWindowMinimized(ImGuiViewport* viewport) {
+static bool ImGui_ImplXlib_GetWindowMinimized(ImGuiViewport* viewport)
+{
     ImVec2 size = ImGui_ImplXlib_GetWindowSize(viewport);
     return size.x == 0 && size.y == 0;
 }
 
-static void ImGui_ImplXlib_SetWindowTitle(ImGuiViewport* viewport, const char* title) {
+static void ImGui_ImplXlib_SetWindowTitle(ImGuiViewport* viewport, const char* title)
+{
     ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
     XStoreName(bd->Dpy, (Window)viewport->PlatformHandle, title);
 }
 
-static void ImGui_ImplXlib_SetWindowAlpha(ImGuiViewport* viewport, float alpha) {
+static void ImGui_ImplXlib_SetWindowAlpha(ImGuiViewport* viewport, float alpha)
+{
     return;
 }
 
-static void ImGui_ImplWin32_UpdateWindow(ImGuiViewport* viewport) {
-    //TODO::
+static void ImGui_ImplWin32_UpdateWindow(ImGuiViewport* viewport)
+{
+    ImGui_ImplXlib_ViewportData* vd = (ImGui_ImplXlib_ViewportData*)viewport->PlatformUserData;
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+
+    Window new_parent = ImGui_ImplXlib_GetHandleFromViewport(viewport->ParentViewport);
+    if (new_parent != vd->ParentHandle) {
+        vd->ParentHandle = new_parent;
+        XSetTransientForHint(bd->Dpy, (Window)vd->Handle, new_parent);
+    }
 }
 
-static float ImGui_ImplXlib_GetWindowDpiScale(ImGuiViewport* viewport) {
+static float ImGui_ImplXlib_GetWindowDpiScale(ImGuiViewport* viewport)
+{
     return 1.0;
 }
 
-static void ImGui_ImplWin32_OnChangedViewport(ImGuiViewport* viewport) {
+static void ImGui_ImplXlib_OnChangedViewport(ImGuiViewport* viewport)
+{
     return;
 }
 
+static void ImGui_ImplXlib_UpdateMonitors()
+{
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    int count = 0;
+    XRRMonitorInfo* monitors = XRRGetMonitors(bd->Dpy, DefaultRootWindow(bd->Dpy), 0, &count);
+    platform_io.Monitors.resize(count);
+    ImVec2 p = {0.0f,0.0f};
+    for (int i = 0; i < count; ++i)
+    {
+        platform_io.Monitors[i].DpiScale = 1.0f;
+        platform_io.Monitors[i].PlatformHandle = (void*)monitors[i].name;
+        platform_io.Monitors[i].MainPos = p;
+        platform_io.Monitors[i].MainSize= ImVec2(monitors[i].width, monitors[i].height);
+        platform_io.Monitors[i].WorkPos = p;
+        platform_io.Monitors[i].WorkSize = ImVec2(monitors[i].width, monitors[i].height);
+        p.x += monitors[i].width;
+    }
+    XRRFreeMonitors(monitors);
+    bd->WantUpdateMonitors = 0;
+}
+
+void ImGui_ImplXlib_OpenGLRendererCreate(ImGuiViewport* viewport) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+
+    int count = 0;
+    GLXFBConfig* fbConfings = glXChooseFBConfig(bd->Dpy, DefaultScreen(bd->Dpy), fbAttribs, &count);
+    GLXFBConfig fb_conf = fbConfings[0];
+    XFree(fbConfings);
+    GLXWindow* win = IM_NEW(GLXWindow);
+    *win = glXCreateWindow(bd->Dpy, fb_conf, (Window)viewport->PlatformHandle, 0);
+    viewport->RendererUserData = win;
+}
+
+static void ImGui_ImplXlib_OpenGLRendererDestroy(ImGuiViewport* viewport) {
+
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    if (!viewport->RendererUserData)
+        return;
+    GLXWindow* win = (GLXWindow*)viewport->RendererUserData;
+    glXDestroyWindow(bd->Dpy, *win);
+    viewport->RendererUserData = 0;
+    IM_DELETE(win);
+}
+
+static void ImGui_ImplXlib_OpenGLRendererSwapBuffers(ImGuiViewport* viewport, void* render_arg) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    GLXWindow* win = (GLXWindow*)viewport->RendererUserData;
+    if (!win)
+        return;
+//    glViewport(0, 0, (int)200, 200);
+//    glClearColor(1.0,1.0,0.0,1.0);
+//    glClear(GL_COLOR_BUFFER_BIT);
+    glXSwapBuffers(bd->Dpy, *win);
+}
+
+
+void ImGui_ImplXlib_SetRendererCtx(GLXContext ctx) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    bd->RendererCtx = ctx;
+}
+
+static void ImGui_ImplXlib_OpenGLRendererRender(ImGuiViewport* viewport, void*) {
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    GLXWindow* win = (GLXWindow*)viewport->RendererUserData;
+    glXMakeCurrent(bd->Dpy, *win, (GLXContext)bd->RendererCtx);
+}
+
+void ImGui_ImplXlib_InitOpenGLRenderer() {
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    platform_io.Renderer_CreateWindow = ImGui_ImplXlib_OpenGLRendererCreate;
+    platform_io.Renderer_DestroyWindow = ImGui_ImplXlib_OpenGLRendererDestroy;
+    platform_io.Renderer_SwapBuffers = ImGui_ImplXlib_OpenGLRendererSwapBuffers;
+    platform_io.Platform_RenderWindow = ImGui_ImplXlib_OpenGLRendererRender;
+}
 
 void ImGui_ImplXlib_InitMultiViewportSupport() {
-    //XSetInputFocus
+    ImGui_ImplXlib_UpdateMonitors();
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    ImGui_ImplXlib_Data* bd = ImGui_ImplXlib_GetBackendData();
+    ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+
     platform_io.Platform_CreateWindow = ImGui_ImplXlib_CreateWindow;
     platform_io.Platform_DestroyWindow = ImGui_ImplXlib_DestroyWindow;
-    platform_io.Platform_ShowWindow = ImGui_ImplXlib_DestroyWindow;
+    platform_io.Platform_ShowWindow = Imgui_ImplXlib_ShowWindow;
     platform_io.Platform_SetWindowPos = ImGui_ImplXlib_SetWindowPos;
     platform_io.Platform_GetWindowPos = ImGui_ImplXlib_GetWindowPos;
     platform_io.Platform_SetWindowSize = ImGui_ImplXlib_SetWindowSize;
@@ -597,7 +736,17 @@ void ImGui_ImplXlib_InitMultiViewportSupport() {
     platform_io.Platform_SetWindowAlpha = ImGui_ImplXlib_SetWindowAlpha;
     platform_io.Platform_UpdateWindow = ImGui_ImplWin32_UpdateWindow;
     platform_io.Platform_GetWindowDpiScale = ImGui_ImplXlib_GetWindowDpiScale; // FIXME-DPI
-    platform_io.Platform_OnChangedViewport = ImGui_ImplWin32_OnChangedViewport; // FIXME-DPI
+    platform_io.Platform_OnChangedViewport = ImGui_ImplXlib_OnChangedViewport; // FIXME-DPI
+
+    ImGui_ImplXlib_ViewportData* vd = IM_NEW(ImGui_ImplXlib_ViewportData);
+    vd->Handle = bd->Win;
+    vd->ParentHandle = 0;
+    vd->Owned = 0;
+    main_viewport->PlatformUserData = vd;
+    main_viewport->PlatformHandle = (void*)vd->Handle;
+    main_viewport->PlatformHandleRaw = (void*)vd->Handle;
+
+    ImGui_ImplXlib_InitOpenGLRenderer();
 }
 
 bool ImGui_ImplXlib_Init(Display* display, Window window)
@@ -698,7 +847,6 @@ static void ImGui_ImplXlib_UpdateMouseData()
     unsigned int mask;
     if (XQueryPointer(bd->Dpy, bd->Win, &root, &child, &mouse_x_global, &mouse_y_global, &window_x, &window_y, &mask))
         io.AddMousePosEvent((float)(window_x), (float)(window_y));
-
 }
 
 static void ImGui_ImplXlib_UpdateMouseCursor()
